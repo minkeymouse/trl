@@ -554,7 +554,9 @@ class DPOTrainer(_BaseTrainer):
 
         # Processing class
         if processing_class is None:
-            processing_class = AutoProcessor.from_pretrained(get_config_model_id(model.config))
+            processing_class = AutoProcessor.from_pretrained(
+                get_config_model_id(model.config), trust_remote_code=True
+            )
 
         # Handle pad token for processors or tokenizers
         if isinstance(processing_class, ProcessorMixin):

@@ -37,6 +37,7 @@ from huggingface_hub import ModelCard, ModelCardData
 from torch.utils.data import Sampler
 from transformers import (
     AutoConfig,
+    AutoModelForCausalLM,
     BitsAndBytesConfig,
     PretrainedConfig,
     PreTrainedModel,
@@ -1036,9 +1037,15 @@ def create_model_from_path(
             f"a valid `torch.dtype` (e.g., 'float32'), but got {dtype}."
         )
     kwargs["device_map"] = kwargs.get("device_map", "auto")
+    trust_remote_code = kwargs.get("trust_remote_code", False)
     if architecture is None:
-        config = AutoConfig.from_pretrained(model_id)
-        architecture = getattr(transformers, config.architectures[0])
+        config = AutoConfig.from_pretrained(model_id, trust_remote_code=trust_remote_code)
+        arch_name = config.architectures[0]
+        # Remote-code CausalLMs (e.g. Nemotron-H) must load via AutoModelForCausalLM, not
+        # getattr(transformers, ...) which resolves to the in-tree class with the wrong config.
+        if arch_name.endswith("ForCausalLM"):
+            return AutoModelForCausalLM.from_pretrained(model_id, **kwargs)
+        architecture = getattr(transformers, arch_name)
     model = architecture.from_pretrained(model_id, **kwargs)
     return model
 

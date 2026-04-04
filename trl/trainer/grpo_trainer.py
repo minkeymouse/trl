@@ -308,7 +308,10 @@ class GRPOTrainer(_BaseTrainer):
         # Processing class
         if processing_class is None:
             processing_class = AutoProcessor.from_pretrained(
-                get_config_model_id(model.config), truncation_side="left", padding_side="left"
+                get_config_model_id(model.config),
+                truncation_side="left",
+                padding_side="left",
+                trust_remote_code=True,
             )
 
         # Handle pad token for processors or tokenizers

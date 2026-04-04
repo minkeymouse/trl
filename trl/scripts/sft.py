@@ -94,7 +94,9 @@ def main(script_args, training_args, model_args, dataset_args):
         model_kwargs["quantization_config"] = quantization_config
 
     # Create model
-    config = AutoConfig.from_pretrained(model_args.model_name_or_path)
+    config = AutoConfig.from_pretrained(
+        model_args.model_name_or_path, trust_remote_code=model_args.trust_remote_code
+    )
     valid_image_text_architectures = MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES.values()
 
     if config.architectures and any(arch in valid_image_text_architectures for arch in config.architectures):
