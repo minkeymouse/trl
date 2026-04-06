@@ -155,6 +155,9 @@ class RLOOConfig(_BaseConfig):
         vllm_enable_sleep_mode (`bool`, *optional*, defaults to `False`):
             Enable vLLM sleep mode to offload weights/cache during the optimizer step. Keeps GPU memory usage low, but
             waking the engine adds host–device transfer latency.
+        vllm_trust_remote_code (`bool`, *optional*):
+            Passed to vLLM's `LLM(..., trust_remote_code=...)` in colocate mode. If `None` (default), TRL infers from
+            the model config (`trust_remote_code` or `auto_map`).
 
         > Parameters that control the training
 
@@ -389,6 +392,13 @@ class RLOOConfig(_BaseConfig):
         metadata={
             "help": "Enable vLLM sleep mode to offload weights/cache during the optimizer step. Keeps GPU memory "
             "usage low, but waking the engine adds host–device transfer latency."
+        },
+    )
+    vllm_trust_remote_code: bool | None = field(
+        default=None,
+        metadata={
+            "help": "If set, forwarded to vLLM `trust_remote_code` when `use_vllm` and colocate mode. If `None`, "
+            "inferred from the model config."
         },
     )
     vllm_structured_outputs_regex: str | None = field(

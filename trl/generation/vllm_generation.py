@@ -41,6 +41,29 @@ if is_vllm_available():
 logger = logging.getLogger(__name__)
 
 
+def _unwrap_model_for_config(model: torch.nn.Module) -> torch.nn.Module:
+    base = model
+    get_bm = getattr(base, "get_base_model", None)
+    if callable(get_bm):
+        try:
+            base = get_bm()
+        except Exception:
+            pass
+    return base
+
+
+def infer_vllm_trust_remote_code(model: torch.nn.Module, explicit: bool | None) -> bool:
+    """Resolve `trust_remote_code` for vLLM when the trainer did not set it explicitly."""
+    if explicit is not None:
+        return explicit
+    cfg = getattr(_unwrap_model_for_config(model), "config", None)
+    if cfg is None:
+        return False
+    if bool(getattr(cfg, "trust_remote_code", False)):
+        return True
+    return bool(getattr(cfg, "auto_map", None))
+
+
 def empty_cache() -> None:
     """Empties the cache of the available torch device.
 
@@ -172,6 +195,9 @@ class VLLMGeneration:
             - "vllm" will use the vLLM model implementation.
             - "transformers" will use the Transformers model implementation.
             - "terratorch" will use the TerraTorch model implementation.
+        trust_remote_code (`bool`, *optional*):
+            Forwarded to vLLM `LLM` in colocate mode. If `None`, set from the policy model config (`trust_remote_code`
+            or Hugging Face `auto_map`), so remote-code models (e.g. Nemotron-H) work without an extra flag.
 
         > Parameters for generation:
 
@@ -235,6 +261,7 @@ class VLLMGeneration:
         max_num_seqs: int | None = None,
         enable_sleep_mode: bool = False,
         model_impl: str = "auto",
+        trust_remote_code: bool | None = None,
         # Generation configuration
         repetition_penalty: float = 1.0,
         temperature: float = 1.0,
@@ -268,6 +295,7 @@ class VLLMGeneration:
         self.max_num_seqs = max_num_seqs
         self.enable_sleep_mode = enable_sleep_mode
         self.model_impl = model_impl
+        self.trust_remote_code = trust_remote_code
 
         # Generation configuration
         self.repetition_penalty = repetition_penalty
@@ -339,6 +367,7 @@ class VLLMGeneration:
                         raise ValueError("vLLM does not support in-flight 8-bit quantization.")
 
             # Build LLM initialization kwargs
+            trc = infer_vllm_trust_remote_code(model, self.trust_remote_code)
             self.llm = LLM(
                 model=model.name_or_path,
                 tensor_parallel_size=self.tensor_parallel_size,
@@ -355,6 +384,7 @@ class VLLMGeneration:
                 # Important so temperature scaling/logit tweaking affects the TIS log probs
                 logprobs_mode="processed_logprobs",
                 quantization=quantization,
+                trust_remote_code=trc,
             )
             if self.enable_sleep_mode:
                 self.llm.sleep(level=2)
