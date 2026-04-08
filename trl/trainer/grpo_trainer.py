@@ -2274,7 +2274,7 @@ class GRPOTrainer(_BaseTrainer):
             input_ids,
             attention_mask,
             logits_to_keep,
-            compute_entropy=True,
+            compute_entropy=(self.top_entropy_quantile < 1.0),
             pixel_values=inputs.get("pixel_values"),
             image_grid_thw=inputs.get("image_grid_thw"),
             num_images=inputs.get("num_images"),
@@ -2425,8 +2425,9 @@ class GRPOTrainer(_BaseTrainer):
             mean_kl = masked_batch_mean(per_token_kl)
             self._metrics[mode]["kl"].append(self.accelerator.gather(mean_kl).nanmean().item())
 
-        mean_entropy = masked_batch_mean(entropies)
-        self._metrics[mode]["entropy"].append(self.accelerator.gather(mean_entropy).nanmean().item())
+        if entropies is not None:
+            mean_entropy = masked_batch_mean(entropies)
+            self._metrics[mode]["entropy"].append(self.accelerator.gather(mean_entropy).nanmean().item())
 
         if self.loss_type in ["grpo", "bnpo", "dr_grpo", "dapo", "luspo"]:
             # Compute the clipped probability ratios
