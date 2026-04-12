@@ -211,7 +211,7 @@ class DPOConfig(_BaseConfig):
         metadata={
             "help": "Type of loss to use. Possible values are: `'sigmoid'`, `'hinge'`, `'ipo'`, `'exo_pair'`, "
             "`'nca_pair'`, `'robust'`, `'bco_pair'`, `'sppo_hard'`, `'aot'`, `'aot_unpaired'`, `'apo_zero'`, "
-            "`'apo_down'`, `'discopop'`, `'sft'`. If multiple loss types are provided, they will be combined using "
+            "`'apo_down'`, `'discopop'`, `'simpo'`, `'sft'`. If multiple loss types are provided, they will be combined using "
             "the weights specified in `loss_weights`.",
         },
     )
@@ -277,6 +277,35 @@ class DPOConfig(_BaseConfig):
             "modulated loss when using `loss_type='discopop'`. The paper recommends the default value "
             "`discopop_tau=0.05`."
         },
+    )
+    simpo_gamma: float = field(
+        default=0.5,
+        metadata={
+            "help": "Target reward margin γ for SimPO (Simple Preference Optimization) when `loss_type` includes "
+            "`'simpo'`. Uses length-normalized **policy** log-probabilities; the SimPO loss term does not use the "
+            "reference log-ratio (see arXiv:2405.14734)."
+        },
+    )
+    spectral_aux_lambda: float = field(
+        default=0.0,
+        metadata={
+            "help": "HiPO / Hidden Preference Optimization: if >0, add differentiable trajectory auxiliary on "
+            "last-layer hidden states over the completion span (see `trl.trainer.dpo_spectral_aux`). "
+            "Statistic is selected by `trajectory_aux_stat`. "
+            "Requires `domain_id` in the batch and `spectral_targets_tensor` set on the trainer."
+        },
+    )
+    trajectory_aux_stat: str = field(
+        default="fft_lowband",
+        metadata={
+            "help": "HiPO: which fixed map φ to apply along the completion axis. "
+            "`fft_lowband`: time-axis RFFT low-bin energy ratio (legacy 'spectral'). "
+            "`mean_hidden_l2`: mean L2 norm of completion hidden vectors."
+        },
+    )
+    spectral_low_freq_frac: float = field(
+        default=0.15,
+        metadata={"help": "HiPO: low-frequency bin fraction when `trajectory_aux_stat=fft_lowband`."},
     )
     activation_offloading: bool = field(
         default=False,

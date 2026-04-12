@@ -209,6 +209,8 @@ class DataCollatorForPreference(DataCollatorMixin):
             output["ref_chosen_logps"] = ref_chosen_logps
         if "ref_rejected_logps" in examples[0]:
             output["ref_rejected_logps"] = ref_rejected_logps
+        if "domain_id" in examples[0]:
+            output["domain_id"] = torch.tensor([int(example["domain_id"]) for example in examples], dtype=torch.long)
         return output
 
 
@@ -667,6 +669,7 @@ class DPOTrainer(_BaseTrainer):
         self.f_alpha_divergence_coef = args.f_alpha_divergence_coef
         self.label_smoothing = args.label_smoothing
         self.use_weighting = args.use_weighting
+        self.simpo_gamma = getattr(args, "simpo_gamma", 0.5)
         if self.use_weighting and any(loss_type in {"aot", "aot_unpaired"} for loss_type in self.loss_types):
             raise NotImplementedError(
                 "WPO-style weighting is not implemented for 'aot' or 'aot_unpaired' because those losses sort "
@@ -953,6 +956,8 @@ class DPOTrainer(_BaseTrainer):
                 output["prompt_ids"] = prompt_ids
                 output["chosen_ids"] = prompt_chosen_ids[len(prompt_ids) :]
                 output["rejected_ids"] = prompt_rejected_ids[len(prompt_ids) :]
+                if "domain_id" in example:
+                    output["domain_id"] = example["domain_id"]
                 return output
 
             dataset = dataset.map(tokenize_fn, fn_kwargs={"processing_class": processing_class}, **map_kwargs)
@@ -1174,7 +1179,13 @@ class DPOTrainer(_BaseTrainer):
             if key in inputs:
                 model_kwargs[key] = inputs[key]
 
+        spectral_lambda_pre = float(getattr(self.args, "spectral_aux_lambda", 0.0) or 0.0)
+        if spectral_lambda_pre > 0:
+            model_kwargs["output_hidden_states"] = True
+
         outputs = model(**model_kwargs)
+
+        ref_forward_kw = {k: v for k, v in model_kwargs.items() if k != "output_hidden_states"}
         shift_logits = outputs.logits[..., :-1, :].contiguous()
         shift_labels = input_ids[..., 1:].contiguous()
         shift_completion_mask = completion_mask[..., 1:].contiguous()
@@ -1208,9 +1219,9 @@ class DPOTrainer(_BaseTrainer):
                     # - Re-training an existing adapter: an initial copy is loaded under the name "ref".
                     model = self.accelerator.unwrap_model(model)
                     with use_adapter(model, adapter_name="ref" if "ref" in model.peft_config else None):
-                        ref_outputs = self.model(**model_kwargs)
+                        ref_outputs = self.model(**ref_forward_kw)
                 else:
-                    ref_outputs = self.ref_model(**model_kwargs)
+                    ref_outputs = self.ref_model(**ref_forward_kw)
 
             ref_shift_logits = ref_outputs.logits[..., :-1, :].contiguous()
             ref_per_token_logps = selective_log_softmax(ref_shift_logits, shift_labels)
@@ -1379,11 +1390,20 @@ class DPOTrainer(_BaseTrainer):
                 # shape of other losses; only the mean is used, so this is a no-op numerically.
                 per_sequence_loss = batch_loss.expand(chosen_logits.size(0))
 
+            elif loss_type == "simpo":
+                # HiPO stack: SimPO — reference-free pairwise loss on length-normalized policy log-probs (arXiv:2405.14734).
+                chosen_mask_s, rejected_mask_s = completion_mask.chunk(2, dim=0)
+                chosen_len = chosen_mask_s.sum(dim=1).clamp(min=1).to(chosen_logps.dtype)
+                rejected_len = rejected_mask_s.sum(dim=1).clamp(min=1).to(rejected_logps.dtype)
+                r_w = self.beta * chosen_logps / chosen_len
+                r_l = self.beta * rejected_logps / rejected_len
+                per_sequence_loss = -F.logsigmoid(r_w - r_l - self.simpo_gamma)
+
             else:
                 raise ValueError(
                     f"Unknown loss type: {loss_type}. Should be one of ['sigmoid', 'hinge', 'ipo', 'exo_pair', "
                     "'nca_pair', 'robust', 'bco_pair', 'sppo_hard', 'aot', 'aot_unpaired', 'apo_zero', 'apo_down', "
-                    "'discopop', 'sft']"
+                    "'discopop', 'simpo', 'sft']"
                 )
 
             if self.use_weighting:
@@ -1401,7 +1421,53 @@ class DPOTrainer(_BaseTrainer):
 
             loss += per_sequence_loss.mean() * loss_weight
 
+        # HiPO: preference loss before optional trajectory auxiliary (for logging / ablations).
+        if isinstance(loss, torch.Tensor):
+            pref_loss_before_hipo_aux = loss.detach().float()
+        else:
+            pref_loss_before_hipo_aux = torch.tensor(float(loss), device=device, dtype=torch.float32)
+
+        # HiPO: optional hidden-state trajectory auxiliary (DPO + domain targets).
+        spectral_lambda = float(getattr(self.args, "spectral_aux_lambda", 0.0) or 0.0)
+        targets_table = getattr(self, "spectral_targets_tensor", None)
+        domain_id_batch = inputs.get("domain_id")
+        aux_mse_unweighted = 0.0
+        aux_weighted = 0.0
+        if (
+            spectral_lambda > 0
+            and targets_table is not None
+            and domain_id_batch is not None
+            and getattr(outputs, "hidden_states", None) is not None
+        ):
+            from .dpo_spectral_aux import batch_completion_low_freq_r, batch_completion_mean_hidden_l2
+
+            stat = str(getattr(self.args, "trajectory_aux_stat", "fft_lowband") or "fft_lowband").strip().lower()
+            hidden = outputs.hidden_states[-1]
+            half = hidden.shape[0] // 2
+            h_ch, h_rj = hidden[:half], hidden[half:]
+            m_ch, m_rj = completion_mask[:half], completion_mask[half:]
+            if stat in ("fft_lowband", "spectral", "fft"):
+                frac = float(getattr(self.args, "spectral_low_freq_frac", 0.15) or 0.15)
+                r_ch = batch_completion_low_freq_r(h_ch, m_ch, low_freq_frac=frac)
+                r_rj = batch_completion_low_freq_r(h_rj, m_rj, low_freq_frac=frac)
+            elif stat in ("mean_hidden_l2", "l2_mean", "mean_l2"):
+                r_ch = batch_completion_mean_hidden_l2(h_ch, m_ch)
+                r_rj = batch_completion_mean_hidden_l2(h_rj, m_rj)
+            else:
+                raise ValueError(f"Unknown trajectory_aux_stat={stat!r} (HiPO / DPOTrainer)")
+            tvec = targets_table.to(device=device, dtype=r_ch.dtype)
+            t = tvec[domain_id_batch.to(device)].detach()
+            aux = ((r_ch - t) ** 2).mean() + ((r_rj - t) ** 2).mean()
+            aux_mse_unweighted = float(aux.detach().item())
+            aux_weighted = float((spectral_lambda * aux).detach().item())
+            loss = loss + spectral_lambda * aux
+
         # Log the metrics
+        # HiPO: decomposed loss (pref vs trajectory aux); aux_* are 0 when auxiliary is off.
+        self._metrics[mode].setdefault("hipo/pref_loss", []).append(float(pref_loss_before_hipo_aux.item()))
+        self._metrics[mode].setdefault("hipo/aux_mse", []).append(aux_mse_unweighted)
+        self._metrics[mode].setdefault("hipo/aux_weighted", []).append(aux_weighted)
+
         # Entropy
         per_token_entropy = entropy_from_logits(shift_logits.detach())
         entropy = per_token_entropy[shift_completion_mask.bool()].mean()
