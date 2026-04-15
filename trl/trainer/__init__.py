@@ -29,6 +29,8 @@ _import_structure = {
     "dpo_trainer": ["DPOTrainer"],
     "grpo_config": ["GRPOConfig"],
     "grpo_trainer": ["GRPOTrainer"],
+    "hipo_config": ["HiPOConfig"],
+    "hipo_trainer": ["HiPOTrainer"],
     "kto_config": ["KTOConfig"],
     "kto_trainer": ["KTOTrainer"],
     "model_config": ["ModelConfig"],
@@ -59,6 +61,8 @@ if TYPE_CHECKING:
     from .dpo_trainer import DPOTrainer
     from .grpo_config import GRPOConfig
     from .grpo_trainer import GRPOTrainer
+    from .hipo_config import HiPOConfig
+    from .hipo_trainer import HiPOTrainer
     from .kto_config import KTOConfig
     from .kto_trainer import KTOTrainer
     from .model_config import ModelConfig

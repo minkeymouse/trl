@@ -1151,6 +1151,65 @@ class GRPOTrainer(_BaseTrainer):
         """
         self._pending_metrics[name].append(value)
 
+    def _compute_grpo_group_advantages(
+        self,
+        rewards_per_func: torch.Tensor,
+        completion_mask: torch.Tensor,
+        num_generations: int,
+        device: torch.device,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Map per-reward-function scores to per-completion advantages (GRPO grouping).
+
+        Subclasses may override to change how scalar rewards are formed before mean/std normalization
+        (e.g. HiPO auxiliary diagnostics).
+        """
+        if self.multi_objective_aggregation == "sum_then_normalize":
+            # Apply weights to each reward function's output and sum
+            rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
+            mean_grouped_rewards = rewards.view(-1, num_generations).mean(dim=1)
+            mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(num_generations, dim=0)
+            if self.scale_rewards in ["group", "none"]:
+                # If self.scale_rewards = "none", we'll only use std_rewards to check for zero std for logging
+                if num_generations > 1:
+                    std_rewards = rewards.view(-1, num_generations).std(dim=1)
+                    std_rewards = std_rewards.repeat_interleave(num_generations, dim=0)
+                else:  # doesn't occur during training, but could occur in eval when num_generations_eval=1
+                    std_rewards = torch.zeros_like(rewards)
+            elif self.scale_rewards == "batch":
+                # Compute global std
+                if rewards.numel() > 1:
+                    std_rewards = rewards.std().expand_as(rewards)
+                else:  # doesn't occur during training, but could occur in eval when num_generations_eval=batch_size=1
+                    std_rewards = torch.zeros_like(rewards)
+            else:
+                raise ValueError(
+                    f"Invalid value for scale_rewards: {self.scale_rewards}. Must be one of 'batch', 'group', or 'none'."
+                )
+
+            advantages = rewards - mean_grouped_rewards
+            if self.scale_rewards != "none":
+                advantages = advantages / (std_rewards + 1e-4)
+            is_std_zero = torch.isclose(std_rewards, torch.zeros_like(std_rewards))  # for logging
+
+        elif self.multi_objective_aggregation == "normalize_then_sum":
+            grouped = rewards_per_func.view(-1, num_generations, len(self.reward_funcs))
+            mean_k = torch.nanmean(grouped, dim=1, keepdim=True)
+            std_k = nanstd(grouped, dim=1, keepdim=True) if num_generations > 1 else torch.zeros_like(mean_k)
+            reward_k = (grouped - mean_k) / (std_k + 1e-4)
+            reward_k = reward_k.view(-1, len(self.reward_funcs))
+            rewards = (reward_k * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
+            std_rewards = rewards.std().expand_as(rewards) if rewards.numel() > 1 else torch.zeros_like(rewards)
+            advantages = (rewards - rewards.mean()) / (std_rewards + 1e-4)
+            is_std_zero = torch.isclose(std_rewards, torch.zeros_like(std_rewards))  # for logging
+
+        else:
+            raise ValueError(
+                f"Invalid multi_objective_aggregation: {self.multi_objective_aggregation}. Must be "
+                "'sum_then_normalize' or 'normalize_then_sum'."
+            )
+
+        return advantages, is_std_zero
+
     @profiling_decorator
     def _calculate_rewards(self, inputs, prompts, completions, completion_ids_list):
         device = self.accelerator.device
@@ -1965,50 +2024,9 @@ class GRPOTrainer(_BaseTrainer):
         rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)
         num_generations = self.num_generations if mode == "train" else self.num_generations_eval
 
-        if self.multi_objective_aggregation == "sum_then_normalize":
-            # Apply weights to each reward function's output and sum
-            rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
-            mean_grouped_rewards = rewards.view(-1, num_generations).mean(dim=1)
-            mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(num_generations, dim=0)
-            if self.scale_rewards in ["group", "none"]:
-                # If self.scale_rewards = "none", we'll only use std_rewards to check for zero std for logging
-                if num_generations > 1:
-                    std_rewards = rewards.view(-1, num_generations).std(dim=1)
-                    std_rewards = std_rewards.repeat_interleave(num_generations, dim=0)
-                else:  # doesn't occur during training, but could occur in eval when num_generations_eval=1
-                    std_rewards = torch.zeros_like(rewards)
-            elif self.scale_rewards == "batch":
-                # Compute global std
-                if rewards.numel() > 1:
-                    std_rewards = rewards.std().expand_as(rewards)
-                else:  # doesn't occur during training, but could occur in eval when num_generations_eval=batch_size=1
-                    std_rewards = torch.zeros_like(rewards)
-            else:
-                raise ValueError(
-                    f"Invalid value for scale_rewards: {self.scale_rewards}. Must be one of 'batch', 'group', or 'none'."
-                )
-
-            advantages = rewards - mean_grouped_rewards
-            if self.scale_rewards != "none":
-                advantages = advantages / (std_rewards + 1e-4)
-            is_std_zero = torch.isclose(std_rewards, torch.zeros_like(std_rewards))  # for logging
-
-        elif self.multi_objective_aggregation == "normalize_then_sum":
-            grouped = rewards_per_func.view(-1, num_generations, len(self.reward_funcs))
-            mean_k = torch.nanmean(grouped, dim=1, keepdim=True)
-            std_k = nanstd(grouped, dim=1, keepdim=True) if num_generations > 1 else torch.zeros_like(mean_k)
-            reward_k = (grouped - mean_k) / (std_k + 1e-4)
-            reward_k = reward_k.view(-1, len(self.reward_funcs))
-            rewards = (reward_k * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
-            std_rewards = rewards.std().expand_as(rewards) if rewards.numel() > 1 else torch.zeros_like(rewards)
-            advantages = (rewards - rewards.mean()) / (std_rewards + 1e-4)
-            is_std_zero = torch.isclose(std_rewards, torch.zeros_like(std_rewards))  # for logging
-
-        else:
-            raise ValueError(
-                f"Invalid multi_objective_aggregation: {self.multi_objective_aggregation}. Must be "
-                "'sum_then_normalize' or 'normalize_then_sum'."
-            )
+        advantages, is_std_zero = self._compute_grpo_group_advantages(
+            rewards_per_func, completion_mask, num_generations, device
+        )
 
         # Slice to keep only the local part of the data
         process_slice = slice(
@@ -2017,6 +2035,7 @@ class GRPOTrainer(_BaseTrainer):
         )
         all_process_advantages = advantages.clone()  # keep the aggregated advantages for logging
         advantages = advantages[process_slice]
+        local_rewards_per_func = rewards_per_func[process_slice]
 
         # Calculate mean reward per function, but only for samples where the function was applied (non-NaN values)
         for i, reward_func_name in enumerate(self.reward_func_names):
@@ -2098,6 +2117,7 @@ class GRPOTrainer(_BaseTrainer):
             "completion_ids": completion_ids,
             "completion_mask": completion_mask,
             "advantages": advantages,
+            "rewards_per_func": local_rewards_per_func,
             "num_items_in_batch": num_items_in_batch,
         }
         if old_per_token_logps is not None:
@@ -2477,7 +2497,24 @@ class GRPOTrainer(_BaseTrainer):
             # in a batch produces NaN for that batch's metric. With logging_steps > 1, a naive sum()/len()
             # would let a single NaN contaminate valid data from other batches. Only return None when no
             # valid values remain (e.g. JSON loggers crash on float NaN).
-            valid = [v for v in val if not math.isnan(v)]
+            # HiPO (and extensions) may append non-float diagnostics (e.g. pivot skip reason tags); skip those.
+            valid: list[float] = []
+            for v in val:
+                if isinstance(v, bool):
+                    valid.append(1.0 if v else 0.0)
+                elif isinstance(v, int):
+                    valid.append(float(v))
+                elif isinstance(v, float):
+                    if math.isfinite(v):
+                        valid.append(v)
+                elif isinstance(v, (np.floating, np.integer)):
+                    fv = float(v)
+                    if math.isfinite(fv):
+                        valid.append(fv)
+                elif isinstance(v, torch.Tensor) and v.numel() == 1:
+                    fv = float(v.detach().float().cpu().item())
+                    if math.isfinite(fv):
+                        valid.append(fv)
             metrics[key] = sum(valid) / len(valid) if valid else None
 
         # This method can be called both in training and evaluation. When called in evaluation, the keys in `logs`
