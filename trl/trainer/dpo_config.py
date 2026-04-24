@@ -289,23 +289,22 @@ class DPOConfig(_BaseConfig):
     spectral_aux_lambda: float = field(
         default=0.0,
         metadata={
-            "help": "HiPO / Hidden Preference Optimization: if >0, add differentiable trajectory auxiliary on "
-            "last-layer hidden states over the completion span (see `trl.trainer.dpo_spectral_aux`). "
-            "Statistic is selected by `trajectory_aux_stat`. "
+            "help": "If >0, add differentiable trajectory auxiliary on last-layer hidden states over the completion "
+            "span (see `trl.trainer.dpo_spectral_aux`). Statistic is selected by `trajectory_aux_stat`. "
             "Requires `domain_id` in the batch and `spectral_targets_tensor` set on the trainer."
         },
     )
     trajectory_aux_stat: str = field(
         default="fft_lowband",
         metadata={
-            "help": "HiPO: which fixed map φ to apply along the completion axis. "
-            "`fft_lowband`: time-axis RFFT low-bin energy ratio (legacy 'spectral'). "
+            "help": "Which fixed map φ to apply along the completion axis for the trajectory auxiliary. "
+            "`fft_lowband`: time-axis RFFT low-bin energy ratio. "
             "`mean_hidden_l2`: mean L2 norm of completion hidden vectors."
         },
     )
     spectral_low_freq_frac: float = field(
         default=0.15,
-        metadata={"help": "HiPO: low-frequency bin fraction when `trajectory_aux_stat=fft_lowband`."},
+        metadata={"help": "Low-frequency bin fraction when `trajectory_aux_stat=fft_lowband`."},
     )
     activation_offloading: bool = field(
         default=False,

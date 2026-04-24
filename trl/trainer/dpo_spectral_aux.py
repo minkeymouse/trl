@@ -1,4 +1,4 @@
-# HiPO (Hidden Preference Optimization) — Nemotron Kaggle research extension for TRL DPO.
+# DPO spectral trajectory auxiliary — Nemotron Kaggle research extension for TRL DPO.
 # Time-axis low-frequency energy share on last-layer hidden states (completion span only).
 # Mirrors numerics in ``nemotron_lab.feasibility.hidden_fft`` / precompute ``scripts/exp34_precompute_spectral_targets.py``.
 from __future__ import annotations

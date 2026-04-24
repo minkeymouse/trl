@@ -1160,8 +1160,7 @@ class GRPOTrainer(_BaseTrainer):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Map per-reward-function scores to per-completion advantages (GRPO grouping).
 
-        Subclasses may override to change how scalar rewards are formed before mean/std normalization
-        (e.g. HiPO auxiliary diagnostics).
+        Subclasses may override to change how scalar rewards are formed before mean/std normalization.
         """
         if self.multi_objective_aggregation == "sum_then_normalize":
             # Apply weights to each reward function's output and sum
@@ -2476,6 +2475,17 @@ class GRPOTrainer(_BaseTrainer):
             gathered_phi_seq = self.accelerator.gather(phi_seq)
             self._metrics[mode]["vespo/phi_seq_mean"].append(gathered_phi_seq.nanmean().item())
 
+        fft_aux_lambda = float(getattr(self.args, "fft_trace_aux_lambda", 0.0) or 0.0)
+        if fft_aux_lambda > 0.0:
+            from .grpo_fft_aux import compute_fft_aux_loss
+
+            fft_aux = compute_fft_aux_loss(self, model, inputs)
+            self._metrics[mode].setdefault("grpo/fft_aux_unscaled", []).append(float(fft_aux.detach().cpu()))
+            self._metrics[mode].setdefault("grpo/fft_aux_scaled", []).append(
+                float((fft_aux_lambda * fft_aux).detach().cpu())
+            )
+            loss = loss + fft_aux_lambda * fft_aux
+
         return loss
 
     # During eval, Trainer calls prediction_step. If no labels are present in the inputs, it only runs forward and
@@ -2497,7 +2507,7 @@ class GRPOTrainer(_BaseTrainer):
             # in a batch produces NaN for that batch's metric. With logging_steps > 1, a naive sum()/len()
             # would let a single NaN contaminate valid data from other batches. Only return None when no
             # valid values remain (e.g. JSON loggers crash on float NaN).
-            # HiPO (and extensions) may append non-float diagnostics (e.g. pivot skip reason tags); skip those.
+            # Auxiliary extensions (e.g. the FFT aux) may append non-float diagnostics (e.g. pivot skip reason tags); skip those.
             valid: list[float] = []
             for v in val:
                 if isinstance(v, bool):

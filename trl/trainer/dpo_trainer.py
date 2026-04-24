@@ -1391,7 +1391,7 @@ class DPOTrainer(_BaseTrainer):
                 per_sequence_loss = batch_loss.expand(chosen_logits.size(0))
 
             elif loss_type == "simpo":
-                # HiPO stack: SimPO — reference-free pairwise loss on length-normalized policy log-probs (arXiv:2405.14734).
+                # SimPO — reference-free pairwise loss on length-normalized policy log-probs (arXiv:2405.14734).
                 chosen_mask_s, rejected_mask_s = completion_mask.chunk(2, dim=0)
                 chosen_len = chosen_mask_s.sum(dim=1).clamp(min=1).to(chosen_logps.dtype)
                 rejected_len = rejected_mask_s.sum(dim=1).clamp(min=1).to(rejected_logps.dtype)
@@ -1421,14 +1421,14 @@ class DPOTrainer(_BaseTrainer):
 
             loss += per_sequence_loss.mean() * loss_weight
 
-        # HiPO: preference loss before optional trajectory auxiliary (for logging / ablations).
+        # Preference loss before optional trajectory auxiliary (for logging / ablations).
         if isinstance(loss, torch.Tensor):
-            pref_loss_before_hipo_aux = loss.detach().float()
+            pref_loss_before_aux = loss.detach().float()
         else:
-            pref_loss_before_hipo_aux = torch.tensor(float(loss), device=device, dtype=torch.float32)
+            pref_loss_before_aux = torch.tensor(float(loss), device=device, dtype=torch.float32)
 
-        # HiPO: optional hidden-state trajectory auxiliary (DPO + domain targets).
-        spectral_lambda = float(getattr(self.args, "spectral_aux_lambda", 0.0) or 0.0)
+        # Optional hidden-state trajectory auxiliary (DPO + domain targets).
+        spectral_lambda = float(self.args.spectral_aux_lambda or 0.0)
         targets_table = getattr(self, "spectral_targets_tensor", None)
         domain_id_batch = inputs.get("domain_id")
         aux_mse_unweighted = 0.0
@@ -1437,24 +1437,24 @@ class DPOTrainer(_BaseTrainer):
             spectral_lambda > 0
             and targets_table is not None
             and domain_id_batch is not None
-            and getattr(outputs, "hidden_states", None) is not None
+            and outputs.hidden_states is not None
         ):
             from .dpo_spectral_aux import batch_completion_low_freq_r, batch_completion_mean_hidden_l2
 
-            stat = str(getattr(self.args, "trajectory_aux_stat", "fft_lowband") or "fft_lowband").strip().lower()
+            stat = str(self.args.trajectory_aux_stat or "fft_lowband").strip().lower()
             hidden = outputs.hidden_states[-1]
             half = hidden.shape[0] // 2
             h_ch, h_rj = hidden[:half], hidden[half:]
             m_ch, m_rj = completion_mask[:half], completion_mask[half:]
             if stat in ("fft_lowband", "spectral", "fft"):
-                frac = float(getattr(self.args, "spectral_low_freq_frac", 0.15) or 0.15)
+                frac = float(self.args.spectral_low_freq_frac or 0.15)
                 r_ch = batch_completion_low_freq_r(h_ch, m_ch, low_freq_frac=frac)
                 r_rj = batch_completion_low_freq_r(h_rj, m_rj, low_freq_frac=frac)
             elif stat in ("mean_hidden_l2", "l2_mean", "mean_l2"):
                 r_ch = batch_completion_mean_hidden_l2(h_ch, m_ch)
                 r_rj = batch_completion_mean_hidden_l2(h_rj, m_rj)
             else:
-                raise ValueError(f"Unknown trajectory_aux_stat={stat!r} (HiPO / DPOTrainer)")
+                raise ValueError(f"Unknown trajectory_aux_stat={stat!r} (DPOTrainer)")
             tvec = targets_table.to(device=device, dtype=r_ch.dtype)
             t = tvec[domain_id_batch.to(device)].detach()
             aux = ((r_ch - t) ** 2).mean() + ((r_rj - t) ** 2).mean()
@@ -1462,11 +1462,10 @@ class DPOTrainer(_BaseTrainer):
             aux_weighted = float((spectral_lambda * aux).detach().item())
             loss = loss + spectral_lambda * aux
 
-        # Log the metrics
-        # HiPO: decomposed loss (pref vs trajectory aux); aux_* are 0 when auxiliary is off.
-        self._metrics[mode].setdefault("hipo/pref_loss", []).append(float(pref_loss_before_hipo_aux.item()))
-        self._metrics[mode].setdefault("hipo/aux_mse", []).append(aux_mse_unweighted)
-        self._metrics[mode].setdefault("hipo/aux_weighted", []).append(aux_weighted)
+        # Log decomposed loss (pref vs trajectory aux); aux_* are 0 when auxiliary is off.
+        self._metrics[mode].setdefault("dpo/pref_loss", []).append(float(pref_loss_before_aux.item()))
+        self._metrics[mode].setdefault("dpo/aux_mse", []).append(aux_mse_unweighted)
+        self._metrics[mode].setdefault("dpo/aux_weighted", []).append(aux_weighted)
 
         # Entropy
         per_token_entropy = entropy_from_logits(shift_logits.detach())

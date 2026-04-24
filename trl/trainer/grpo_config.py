@@ -704,6 +704,99 @@ class GRPOConfig(_BaseConfig):
             "GDPO: Group reward-Decoupled Normalization Policy Optimization for Multi-reward RL Optimization."
         },
     )
+    # Hidden-layer FFT auxiliary (\fftaux{} in the paper): pull wrong-completion hidden-state spectra toward the
+    # in-group correct-completion prototype. Regularizer only; leave `fft_trace_aux_lambda=0.0` to disable.
+    fft_trace_aux_lambda: float = field(
+        default=0.0,
+        metadata={
+            "help": "Coefficient for the hidden-layer FFT auxiliary loss. Set > 0 to enable. Pulls wrong-completion "
+            "FFT features toward the in-group correct-completion prototype (cosine distance). 0 disables the aux "
+            "entirely and the extra forward pass is skipped."
+        },
+    )
+    fft_trace_aux_num_bins: int = field(
+        default=32,
+        metadata={
+            "help": "Number of spectral bins after adaptive pooling of the completion-hidden-state FFT. Fixed width "
+            "across variable completion lengths so prototypes are stable."
+        },
+    )
+    fft_trace_aux_distance: str = field(
+        default="cosine",
+        metadata={
+            "help": "Distance used to pull wrong features toward the correct prototype. One of `cosine`, `mse`."
+        },
+    )
+    fft_trace_aux_detach_correct: bool = field(
+        default=True,
+        metadata={
+            "help": "If `True`, stop gradient through the correct-completion prototype (only wrong features receive "
+            "gradient). Matches the paper default."
+        },
+    )
+    fft_trace_aux_batch_fallback: bool = field(
+        default=True,
+        metadata={
+            "help": "When no micro-batch prompt group contains both correct and wrong completions, fall back to a "
+            "batch-level correct prototype built from all correct completions in the batch."
+        },
+    )
+    fft_trace_aux_proto_momentum: float = field(
+        default=0.95,
+        metadata={
+            "help": "EMA momentum for the cross-step correct-prototype memory used as a last-resort fallback when "
+            "neither group-wise nor batch-wise pairing is available (common at `per_device_train_batch_size=1`)."
+        },
+    )
+    fft_trace_aux_proto_warmup_correct: int = field(
+        default=1,
+        metadata={
+            "help": "Minimum number of EMA prototype updates before the memory fallback is allowed to contribute to "
+            "the FFT auxiliary loss."
+        },
+    )
+    fft_trace_aux_first_n_completion_tokens: int = field(
+        default=0,
+        metadata={
+            "help": "If > 0, the FFT auxiliary only looks at the first N completion tokens per sequence (later "
+            "tokens are masked out). 0 disables and uses the full completion."
+        },
+    )
+    correctness_reward_func_index: int = field(
+        default=0,
+        metadata={
+            "help": "Column index in `rewards_per_func` used as the correctness signal for the FFT auxiliary's "
+            "correct/wrong split."
+        },
+    )
+    correctness_threshold: float = field(
+        default=0.5,
+        metadata={
+            "help": "Threshold on the correctness reward column above which a completion counts as correct for the "
+            "FFT auxiliary split."
+        },
+    )
+    pivot_aux_enable_hard_gate: bool = field(
+        default=True,
+        metadata={
+            "help": "If `True`, skip the FFT auxiliary when the micro-batch has no usable correct/wrong pivot "
+            "(all-one-class, too few valid samples, or below class-ratio). Prevents noisy gradients from degenerate "
+            "partitions."
+        },
+    )
+    pivot_aux_min_valid_samples: int = field(
+        default=4,
+        metadata={
+            "help": "Minimum number of valid (non-empty) completions required before the FFT auxiliary runs."
+        },
+    )
+    pivot_aux_min_class_ratio: float = field(
+        default=0.10,
+        metadata={
+            "help": "Minimum fraction of valid samples that must be correct and wrong each (e.g. 0.1 => both classes "
+            "≥10% of valid). Below this, the FFT auxiliary is skipped."
+        },
+    )
     scale_rewards: str = field(
         default="group",
         metadata={
