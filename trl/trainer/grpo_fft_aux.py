@@ -14,7 +14,7 @@
 
 """Hidden-layer FFT auxiliary loss for [`GRPOTrainer`].
 
-This is the regularizer referred to in the paper ``Anxiety Treatment for Large Language Models: Fine Tuning with
+This is the regularizer referred to in the paper ``Two-sided Zero-variance Barrier in GRPO Post-training: Adapter Shake +
 Hidden Layer FFT'' as ``\\fftaux{}``. It pulls wrong-completion hidden-state spectra toward the in-group
 correct-completion prototype. It plugs into ``GRPOTrainer`` via the ``fft_trace_aux_*`` fields on
 [`GRPOConfig`].
